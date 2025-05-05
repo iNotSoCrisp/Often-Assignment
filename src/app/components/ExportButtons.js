@@ -1,118 +1,138 @@
 "use client";
 import { useState, useEffect } from "react";
-// Remove direct import of html2pdf
-// import html2pdf from "html2pdf.js";
 
 export default function ExportButtons({ elements, theme }) {
   const [generating, setGenerating] = useState(false);
   const [videoReady, setVideoReady] = useState(false);
-  const [html2pdfLoaded, setHtml2pdfLoaded] = useState(false);
+  const [librariesLoaded, setLibrariesLoaded] = useState(false);
+  const [generatingPdf, setGeneratingPdf] = useState(false);
 
-  // Dynamically import html2pdf on client side only
+  // Dynamically import libraries on client side only
   useEffect(() => {
-    let isMounted = true;
-    const loadHtml2pdf = async () => {
+    const loadLibraries = async () => {
       try {
-        // Use dynamic import with window check for Vercel compatibility
         if (typeof window !== 'undefined') {
-          await import('html2pdf.js/dist/html2pdf.bundle.min.js');
-          if (isMounted) setHtml2pdfLoaded(true);
+          await Promise.all([
+            import('dom-to-image-more'),
+            import('jspdf')
+          ]);
+          setLibrariesLoaded(true);
         }
       } catch (err) {
-        console.error("Error loading html2pdf:", err);
+        console.error("Error loading libraries:", err);
       }
     };
 
-    loadHtml2pdf();
-
-    return () => {
-      isMounted = false;
-    };
+    loadLibraries();
   }, []);
 
   // Export as PDF
   const handleExportPdf = async () => {
-    if (!html2pdfLoaded) return;
+    if (!librariesLoaded || generatingPdf) return;
+
+    setGeneratingPdf(true);
 
     try {
-      // Import html2pdf only when needed
-      const html2pdfModule = await import('html2pdf.js/dist/html2pdf.bundle.min.js');
-      const html2pdf = html2pdfModule.default;
+      // Dynamic imports
+      const domtoimage = (await import('dom-to-image-more')).default;
+      const { jsPDF } = await import('jspdf');
 
-      // First get the container with the actual content
+      // Get canvas element
       const canvas = document.querySelector('[class*="absolute inset-0 border rounded-lg"]');
       if (!canvas) {
-        console.error("Canvas element not found");
-        return;
+        throw new Error("Canvas element not found");
       }
 
-      // Set a background color to ensure content is visible
-      const originalStyle = canvas.getAttribute('style') || '';
-      canvas.setAttribute('style', `${originalStyle}; background-color: ${theme === 'dark' ? '#1a202c' : '#ffffff'};`);
+      // Store original styling and content
+      const elementsToHide = Array.from(canvas.querySelectorAll('button'));
+      const moveableElements = Array.from(document.querySelectorAll('[class*="moveable"]'));
 
-      // Create a temporary div to hold our content for the PDF
-      const tempDiv = document.createElement('div');
-      tempDiv.style.width = '1100px'; // Fixed width for PDF generation
-      tempDiv.style.height = '800px'; // Fixed height
-      tempDiv.style.position = 'relative';
-      tempDiv.style.backgroundColor = theme === 'dark' ? '#1a202c' : '#ffffff';
-      tempDiv.style.padding = '20px';
+      // Store original display values
+      const originalButtonDisplay = elementsToHide.map(el => el.style.display);
+      const originalMoveableDisplay = moveableElements.map(el => el.style.display);
 
-      // Clone the canvas content
-      const contentClone = canvas.cloneNode(true);
+      // Hide elements
+      elementsToHide.forEach(el => el.style.display = 'none');
+      moveableElements.forEach(el => el.style.display = 'none');
 
-      // Remove any delete buttons, Moveable controls and select handles
-      const deleteButtons = contentClone.querySelectorAll('button');
-      deleteButtons.forEach(btn => btn.remove());
+      // Create notification
+      const notification = document.createElement('div');
+      notification.textContent = 'Creating PDF...';
+      notification.style.position = 'fixed';
+      notification.style.bottom = '20px';
+      notification.style.left = '50%';
+      notification.style.transform = 'translateX(-50%)';
+      notification.style.padding = '10px 20px';
+      notification.style.backgroundColor = 'black';
+      notification.style.color = 'white';
+      notification.style.borderRadius = '4px';
+      notification.style.zIndex = '9999';
+      document.body.appendChild(notification);
 
-      const moveableControls = contentClone.querySelectorAll('[class*="moveable"]');
-      moveableControls.forEach(control => control.remove());
-
-      const selectHandles = contentClone.querySelectorAll('[data-direction]');
-      selectHandles.forEach(handle => handle.remove());
-
-      // Append the clone to our temp div
-      tempDiv.appendChild(contentClone);
-
-      // Add temporary div to document for html2pdf to process
-      document.body.appendChild(tempDiv);
-      tempDiv.style.visibility = 'hidden';
-      tempDiv.style.position = 'absolute';
-      tempDiv.style.left = '-9999px';
-
-      // Set options for PDF
-      const options = {
-        margin: 10,
-        filename: 'TravelStory.pdf',
-        image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: {
-          scale: 2,
-          useCORS: true,
-          logging: true,
-          allowTaint: true,
-          foreignObjectRendering: true
-        },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' }
-      };
-
-      // Generate PDF
-      await html2pdf()
-        .from(tempDiv)
-        .set(options)
-        .save()
-        .then(() => {
-          // Clean up
-          canvas.setAttribute('style', originalStyle);
-          document.body.removeChild(tempDiv);
-        })
-        .catch(error => {
-          console.error("Error generating PDF:", error);
-          // Clean up
-          canvas.setAttribute('style', originalStyle);
-          document.body.removeChild(tempDiv);
+      try {
+        // Capture the canvas as a PNG image with high quality
+        const dataUrl = await domtoimage.toPng(canvas, {
+          quality: 1.0,
+          bgcolor: theme === 'dark' ? '#1a202c' : '#ffffff',
+          height: canvas.offsetHeight,
+          width: canvas.offsetWidth,
+          style: {
+            'transform': 'none',
+            'transform-origin': 'none'
+          }
         });
+
+        // Create a PDF document
+        const pdf = new jsPDF({
+          orientation: 'landscape',
+          unit: 'mm',
+          format: 'a4'
+        });
+
+        // Get PDF dimensions
+        const pdfWidth = pdf.internal.pageSize.getWidth();
+        const pdfHeight = pdf.internal.pageSize.getHeight();
+
+        // Calculate image dimensions with margins
+        const margin = 10; // 10mm margin
+        const imgWidth = pdfWidth - (margin * 2);
+        const imgHeight = (canvas.offsetHeight * imgWidth) / canvas.offsetWidth;
+
+        // If image is too tall, scale it down
+        const finalImgHeight = Math.min(imgHeight, pdfHeight - (margin * 2));
+        const finalImgWidth = imgHeight > pdfHeight - (margin * 2)
+          ? (canvas.offsetWidth * finalImgHeight) / canvas.offsetHeight
+          : imgWidth;
+
+        // Center the image on the page
+        const x = (pdfWidth - finalImgWidth) / 2;
+        const y = (pdfHeight - finalImgHeight) / 2;
+
+        // Add the image to the PDF
+        pdf.addImage(dataUrl, 'PNG', x, y, finalImgWidth, finalImgHeight);
+
+        // Save the PDF
+        pdf.save('TravelStory.pdf');
+      } finally {
+        // Restore original display values
+        elementsToHide.forEach((el, i) => {
+          el.style.display = originalButtonDisplay[i] || '';
+        });
+
+        moveableElements.forEach((el, i) => {
+          el.style.display = originalMoveableDisplay[i] || '';
+        });
+
+        // Remove notification
+        if (document.body.contains(notification)) {
+          document.body.removeChild(notification);
+        }
+      }
     } catch (error) {
       console.error("Error generating PDF:", error);
+      alert("There was an error creating the PDF. Please try again.");
+    } finally {
+      setGeneratingPdf(false);
     }
   };
 
@@ -159,9 +179,9 @@ export default function ExportButtons({ elements, theme }) {
       <button
         className="px-6 py-3 bg-green-600 text-white rounded shadow-lg font-bold text-lg"
         onClick={handleExportPdf}
-        disabled={!html2pdfLoaded}
+        disabled={!librariesLoaded || generatingPdf}
       >
-        Export as PDF
+        {generatingPdf ? 'Generating...' : 'Export as PDF'}
       </button>
     </div>
   );
